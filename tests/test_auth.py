@@ -1,73 +1,45 @@
 import pytest
-import requests
+import uuid
 
 @pytest.mark.auth
-def test_register_new_user(unique_user_data, base_url):
-    response = requests.post(f"{base_url}/api/v1/auth/register", json=unique_user_data, timeout=10)
+def test_register_new_user(auth_client, unique_user_data):
+    response = auth_client.register(**unique_user_data)
     assert response.status_code == 201
     assert "email" in response.json()["user"]
 
 @pytest.mark.negative
-def test_register_duplicate_email():
+def test_register_duplicate_email(auth_client, unique_user_data):
     """Повторная регистрация с тем же email возвращает ошибку."""
-    payload = {
-        "email": "duplicate@example.com",
-        "username": "user_one",
-        "password": "securepass123"
-    }
+    origin = auth_client.register(**unique_user_data)
+    assert origin.status_code == 201
 
-    # Первый раз — регистрация проходит
-    requests.post(
-        "http://localhost:8000/api/v1/auth/register",
-        json=payload,
-        timeout=5
-    )
-
-    # Второй раз — ожидаем ошибку
-    payload["username"] = "user_two"  # другой username, но тот же email
-    response = requests.post(
-        "http://localhost:8000/api/v1/auth/register",
-        json=payload,
-        timeout=5
-    )
+    duplicate = {**unique_user_data, "username": unique_user_data["username"] + "_2"}
+    response = auth_client.register(**duplicate)
 
     assert response.status_code in (400, 409, 422), (
         f"Ожидали ошибку 400/409/422, получили {response.status_code}"
     )
 
 @pytest.mark.auth
-def test_login_success(unique_user_data, base_url):
-    response = requests.post(f"{base_url}/api/v1/auth/register", json=unique_user_data, timeout=10)
-    response = requests.post(f"{base_url}/api/v1/auth/login", json=unique_user_data, timeout=10)
-    assert response.status_code == 200
-    assert "access_token" in response.json()
+def test_login_success(auth_client, unique_user_data):
+    auth_client.register(**unique_user_data)
+    login_resp = auth_client.login(unique_user_data["username"], unique_user_data["password"])
+    assert login_resp.status_code == 200
+    assert "access_token" in login_resp.json()
 
 @pytest.mark.negative
-def test_login_wrong_password(unique_user_data, base_url):
-    payload = {
-        "email": "duplicate@example.com",
-        "username": "user_one",
-        "password": "securepass123"
-    }
-    invalid_payload = {
-        "email": "duplicate@example.com",
-        "username": "user_one",
-        "password": "wrongpass123"
-    }
-    response = requests.post(f"{base_url}/api/v1/auth/register", json=payload, timeout=10)
-    response = requests.post(f"{base_url}/api/v1/auth/login", json=invalid_payload, timeout=10)
+def test_login_wrong_password(unique_user_data, auth_client):
+    auth_client.register(**unique_user_data)
+    response = auth_client.login(unique_user_data["username"], "WrongPass999!")
     assert response.status_code == 401
 
 @pytest.mark.negative
-def test_login_nonexistent_user(base_url):
-    payload = {
-        "email": "wrong@example.com",
-        "username": "user_wrong",
-        "password": "securepass123"
-    }
-    response = requests.post(f"{base_url}/api/v1/auth/login", json=payload, timeout=10)
+def test_login_nonexistent_user(auth_client):
+    nonexistent = f"nonexistent_{uuid.uuid4().hex[:8]}"
+    response = auth_client.login(nonexistent, "SomePass123!")
     assert response.status_code == 401
 
+@pytest.mark.negative
 @pytest.mark.parametrize("payload, expected_status", [
     pytest.param(
         {"email": "", "username": "u1", "password": "Pass123!"},
@@ -80,12 +52,12 @@ def test_login_nonexistent_user(base_url):
         id="invalid_email_format"
     ),
     pytest.param(
-        {"email": "a@b.com", "username": "", "password": "12"},
+        {"email": "a@b.com", "password": "12"},
         422,
         id="missing_username"
     ),
     pytest.param(
-        {"email": "a@b.com", "username": "u2", "password": ""},
+        {"email": "a@b.com", "username": "u2"},
         422,
         id="missing_password"
     ),
@@ -95,12 +67,8 @@ def test_login_nonexistent_user(base_url):
         id="empty_body"
     ),
 ])
-
-@pytest.mark.negative
-def test_register_validation(api_session, base_url, payload, expected_status):
-    response = api_session.post(
-        f"{base_url}/api/v1/auth/register",
-        json=payload,
-        timeout=5
+def test_register_validation(auth_client, payload, expected_status):
+    response = auth_client.register_raw(payload)
+    assert response.status_code == expected_status, (
+        f"Payload: {payload}, получили {response.status_code}"
     )
-    assert response.status_code == expected_status, f"Payload: {payload}, получили {response.status_code}"
